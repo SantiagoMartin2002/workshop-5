@@ -5,6 +5,7 @@ import { delay } from "../../src/utils";
 import { BASE_NODE_PORT } from "../../src/config";
 import { getNodesState, reachedFinality } from "./utils";
 import { Value } from "../../src/types";
+import * as console from "console";
 
 function generateRandomValue() {
   return Math.round(Math.random()) as 0 | 1;
