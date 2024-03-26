@@ -1,7 +1,9 @@
 import bodyParser from "body-parser";
 import express from "express";
 import { BASE_NODE_PORT } from "../config";
-import { Value } from "../types";
+import { Value, NodeState } from "../types";
+import {delay} from "../utils";
+import * as console from "console";
 
 export async function node(
   nodeId: number, // the ID of the node
