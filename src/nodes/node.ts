@@ -18,33 +18,189 @@ export async function node(
   node.use(express.json());
   node.use(bodyParser.json());
 
-  // TODO implement this
-  // this route allows retrieving the current status of the node
-  // node.get("/status", (req, res) => {});
+  let currentState: NodeState = {
+      killed: isFaulty,
+      x: isFaulty ? null : initialValue,
+      decided: isFaulty ? null : false,
+      k: isFaulty ? null : 0
+  };
 
-  // TODO implement this
-  // this route allows the node to receive messages from other nodes
-  // node.post("/message", (req, res) => {});
+  const incomingMessages: any[] = [];
+  let proposals: Map<number, Value[]> = new Map();
+  let votes: Map<number, Value[]> = new Map();
 
-  // TODO implement this
-  // this route is used to start the consensus algorithm
-  // node.get("/start", async (req, res) => {});
+  // Route to get the status of the node
+  node.get("/status", (req, res) => {
+      if (currentState.killed) {
+          res.status(500).send("faulty");
+      } else {
+          res.status(200).send("live");
+      }
+  });
 
-  // TODO implement this
-  // this route is used to stop the consensus algorithm
-  // node.get("/stop", async (req, res) => {});
+  // Let nodes receive messages from other nodes
+  node.post("/message", (req, res) => {
+      let {k, x, messageType} = req.body;
+      if (!currentState.killed) {
+          if (messageType === "proposal phase") {
+              if (!proposals.has(k)) {
+                  proposals.set(k, []);
+              }
+              proposals.get(k)!.push(x);
 
-  // TODO implement this
-  // get the current state of a node
-  // node.get("/getState", (req, res) => {});
+              if (proposals.get(k)!?.length >= (N - F)) {
+                  let values = proposals.get(k)!;
+                  let count0 = 0;
+                  let count1 = 0;
+                  for (let i = 0; i < values.length; i++) {
+                      if (values[i] === 0) {
+                          count0++;
+                      } else if (values[i] === 1) {
+                          count1++;
+                      }
+                  }
+                  if (count0 > count1) {
+                      x = 0;
+                  } else if (count1 > count0) {
+                      x = 1;
+                  } else {
+                      x = "?";
+                  }
 
-  // start the server
+                  console.log(`Node ${nodeId} decided on value ${x} for k = ${k}`)
+                  for (let i = 0; i < N; i++) {
+                      fetch(`http://localhost:${BASE_NODE_PORT + i}/message`, {
+                          method: 'POST',
+                          headers: {
+                              'Content-Type': 'application/json',
+                          },
+                          body: JSON.stringify({k: k, x: x, messageType: "voting phase"}),
+                      });
+                  }
+
+              }
+          } else if (messageType === "voting phase") {
+              if (!votes.has(k)) {
+                  votes.set(k, []);
+              }
+              votes.get(k)!.push(x);
+              if (votes.get(k)!?.length >= (N - F)) {
+                  let values = votes.get(k)!;
+                  let count0 = 0;
+                  let count1 = 0;
+                  for (let i = 0; i < values.length; i++) {
+                      if (values[i] === 0) {
+                          count0++;
+                      } else if (values[i] === 1) {
+                          count1++;
+                      }
+                  }
+                  if (count0 > F) {
+                      currentState.x = 0;
+                      currentState.decided = true;
+                  } else if (count1 > F) {
+                      currentState.x = 1;
+                      currentState.decided = true;
+                  } else {
+                      if (count0 + count1 > 0 && count0 > count1) {
+                          currentState.x = 0;
+                      } else if (count0 + count1 > 0 && count0 < count1) {
+                          currentState.x = 1;
+                      } else {
+                          currentState.x = Math.random() > 0.5 ? 0 : 1;
+                      }
+                  }
+                  delay(200)
+
+                  // Check if all nodes are of Decided state and call stop route if that's the case
+                  let allDecided = true;
+                  for (let i = 0; i < N; i++) {
+                      // Call getState route of each node
+                      fetch(`http://localhost:${BASE_NODE_PORT + i}/getState`, {
+                          method: 'GET',
+                          headers: {
+                              'Content-Type': 'application/json',
+                          },
+                      }).then(response => response.json())
+                          .then(data => {
+                              // @ts-ignore
+                              if (!data.decided) {
+                                  allDecided = false;
+                              }
+                              // If last node and all previous nodes are decided, stop all nodes
+                              if (i === N - 1 && allDecided) {
+                                  for (let j = 0; j < N; j++) {
+                                      fetch(`http://localhost:${BASE_NODE_PORT + j}/stop`, {
+                                          method: 'GET',
+                                          headers: {
+                                              'Content-Type': 'application/json',
+                                          },
+                                      });
+                                  }
+                              }
+                          });
+                  }
+
+                  currentState.k = k + 1;
+
+                  for (let i = 0; i < N; i++) {
+                      fetch(`http://localhost:${BASE_NODE_PORT + i}/message`, {
+                          method: 'POST',
+                          headers: {
+                              'Content-Type': 'application/json',
+                          },
+                          body: JSON.stringify({k: currentState.k, x: currentState.x, messageType: "proposal phase"}),
+                      });
+                  }
+              }
+
+          }
+          res.status(200).json({message: "Message received"});
+      }
+  });
+
+  // Route to start consensus algo
+  node.get("/start", async (req, res) => {
+      while (!nodesAreReady()) {
+          await delay(5);
+      }
+      if (!currentState.killed) {
+          currentState.k = 1;
+          for (let i = 0; i < N; i++) {
+              fetch(`http://localhost:${BASE_NODE_PORT + i}/message`, {
+                  method: "POST",
+                  headers: {
+                      "Content-Type": "application/json"
+                  },
+                  body: JSON.stringify({
+                      x: currentState.x!,
+                      k: currentState.k!,
+                      messageType: "proposal phase"
+                  })
+              });
+          }
+      }
+      res.status(200).json({message: "Algorithm started"});
+  });
+
+  // Route to stop consensus algo
+  node.get("/stop", async (req, res) => {
+      currentState.killed = true;
+      res.status(200).send("killed");
+  });
+
+  // Route for getting current state
+  node.get("/getState", (req, res) => {
+      res.status(200).send(currentState);
+  });
+
+  // Used for starting the server
   const server = node.listen(BASE_NODE_PORT + nodeId, async () => {
     console.log(
       `Node ${nodeId} is listening on port ${BASE_NODE_PORT + nodeId}`
     );
 
-    // the node is ready
+    // Setting the node as ready
     setNodeIsReady(nodeId);
   });
 
